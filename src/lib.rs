@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 #![no_std]
 
-pub mod errors;
 mod contract;
 mod errors;
 mod events;

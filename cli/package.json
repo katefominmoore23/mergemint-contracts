@@ -1,0 +1,22 @@
+{
+  "name": "@mergemint/cli",
+  "version": "0.1.0",
+  "description": "CLI for MergeMint contract operations",
+  "main": "dist/index.js",
+  "bin": {
+    "mergemint": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mergemint/sdk": "*",
+    "@stellar/stellar-sdk": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.0",
+    "typescript": "^5.4.0"
+  },
+  "license": "MIT"
+}

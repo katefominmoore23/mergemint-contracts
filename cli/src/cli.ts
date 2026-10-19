@@ -1,0 +1,188 @@
+#!/usr/bin/env node
+
+import { MergeMintSDK, createNetworkConfig, TESTNET } from "@mergemint/sdk";
+
+interface CliConfig {
+  network: "testnet" | "mainnet";
+  contractId: string;
+  rpcUrl?: string;
+  json: boolean;
+}
+
+function parseArgs(): { command: string; args: string[]; config: CliConfig } {
+  const args = process.argv.slice(2);
+  const config: CliConfig = {
+    network: (process.env.MERGEMINT_NETWORK as any) ?? "testnet",
+    contractId: process.env.MERGEMINT_CONTRACT_ID ?? "",
+    rpcUrl: process.env.MERGEMINT_RPC_URL,
+    json: false,
+  };
+
+  let command = "";
+  const commandArgs: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+
+    if (arg === "--network") {
+      config.network = args[++i] as any;
+    } else if (arg === "--contract-id") {
+      config.contractId = args[++i];
+    } else if (arg === "--rpc-url") {
+      config.rpcUrl = args[++i];
+    } else if (arg === "--json") {
+      config.json = true;
+    } else if (arg === "--help" || arg === "-h") {
+      showHelp();
+      process.exit(0);
+    } else if (!command) {
+      command = arg;
+    } else {
+      commandArgs.push(arg);
+    }
+  }
+
+  return { command, args: commandArgs, config };
+}
+
+function showHelp(): void {
+  console.log(`
+MergeMint CLI
+
+Usage:
+  mergemint <command> [options]
+
+Commands:
+  list [creator]      List bounties (optionally filter by creator)
+  get <bounty-id>     Get a specific bounty
+  create <params>     Create a new bounty (JSON params)
+  cancel <bounty-id>  Cancel a bounty
+
+Options:
+  --network <name>    Network: testnet or mainnet (default: MERGEMINT_NETWORK or testnet)
+  --contract-id <id>  Contract ID (default: MERGEMINT_CONTRACT_ID)
+  --rpc-url <url>     RPC URL (default: MERGEMINT_RPC_URL or network default)
+  --json              Output as JSON
+  --help, -h          Show this help
+
+Environment Variables:
+  MERGEMINT_NETWORK    Target network
+  MERGEMINT_CONTRACT_ID  Contract address
+  MERGEMINT_RPC_URL    Soroban RPC endpoint
+
+Examples:
+  mergemint list
+  mergemint list GABC...
+  mergemint get abc123def...
+  mergemint create '{"creator":"GABC...","title":"Bounty","rewardAmount":"1000000",...}'
+  `);
+}
+
+async function executeCommand(
+  command: string,
+  args: string[],
+  config: CliConfig
+): Promise<void> {
+  // Validate config
+  if (!config.contractId) {
+    throw new Error(
+      "Contract ID is required. Set MERGEMINT_CONTRACT_ID or pass --contract-id"
+    );
+  }
+
+  // Create SDK instance
+  const networkConfig =
+    config.network === "mainnet"
+      ? { rpcUrl: config.rpcUrl || "https://mainnet.stellar.validationcloud.io", contractId: config.contractId, networkPassphrase: "Public Global Stellar Network ; September 2015" }
+      : createNetworkConfig(TESTNET, config.contractId, config.rpcUrl ? { rpcUrl: config.rpcUrl } : undefined);
+
+  const sdk = new MergeMintSDK(networkConfig);
+
+  switch (command) {
+    case "list": {
+      const creator = args[0];
+      if (creator) {
+        const bountyIds = await sdk.getBountiesByCreator(creator);
+        if (config.json) {
+          console.log(JSON.stringify({ bountyIds }, null, 2));
+        } else {
+          console.log(`Bounties by ${creator}:`);
+          bountyIds.forEach((id) => console.log(`  ${id}`));
+        }
+      } else {
+        const count = await sdk.getBountyCount();
+        if (config.json) {
+          console.log(JSON.stringify({ totalBounties: count.toString() }, null, 2));
+        } else {
+          console.log(`Total bounties: ${count}`);
+        }
+      }
+      break;
+    }
+
+    case "get": {
+      const bountyId = args[0];
+      if (!bountyId) {
+        throw new Error("Bounty ID is required");
+      }
+      const bounty = await sdk.getBounty(bountyId);
+      const meta = await sdk.getBountyMeta(bountyId);
+      const result = { ...bounty, ...meta };
+      if (config.json) {
+        console.log(JSON.stringify(result, (k, v) => (typeof v === "bigint" ? v.toString() : v), 2));
+      } else {
+        console.log(JSON.stringify(result, null, 2));
+      }
+      break;
+    }
+
+    case "create": {
+      const paramsJson = args[0];
+      if (!paramsJson) {
+        throw new Error("Parameters JSON is required");
+      }
+      const params = JSON.parse(paramsJson);
+      console.log("Creating bounty (dry-run mode):");
+      if (config.json) {
+        console.log(JSON.stringify({ status: "ready", params }, null, 2));
+      } else {
+        console.log(JSON.stringify(params, null, 2));
+      }
+      break;
+    }
+
+    case "cancel": {
+      const bountyId = args[0];
+      if (!bountyId) {
+        throw new Error("Bounty ID is required");
+      }
+      console.log(`Cancelling bounty ${bountyId} (dry-run mode)`);
+      if (config.json) {
+        console.log(JSON.stringify({ status: "ready", bountyId }, null, 2));
+      }
+      break;
+    }
+
+    default:
+      throw new Error(`Unknown command: ${command}`);
+  }
+}
+
+async function main(): Promise<void> {
+  try {
+    const { command, args, config } = parseArgs();
+
+    if (!command) {
+      showHelp();
+      process.exit(1);
+    }
+
+    await executeCommand(command, args, config);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Error: ${message}`);
+    process.exit(1);
+  }
+}
+
+main();

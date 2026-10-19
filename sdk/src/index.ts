@@ -13,6 +13,7 @@ import {
 
 export * from "./types";
 export * from "./errors";
+export * from "./mock";
 
 import {
   NetworkConfig,
@@ -427,6 +428,45 @@ export class MergeMintSDK {
     return ids.map((b) => Buffer.from(b).toString("hex"));
   }
 
+  /**
+   * Fetches multiple bounties by their IDs, automatically chunking large requests.
+   * Preserves input order and skips missing IDs.
+   *
+   * @param bountyIds - Array of bounty IDs as hex-encoded `BytesN<32>` strings.
+   * @param chunkSize - Maximum bounties per RPC call (default: 10).
+   * @returns Array of {@link Bounty} objects in the same order as input.
+   * Missing or unreachable bounties are omitted from the result.
+   * @throws {@link MergeMintSdkError} if any bountyId is not valid hex, or if the
+   * RPC transport fails on every attempt allowed by the configured retry policy.
+   */
+  async getBountiesByIds(bountyIds: string[], chunkSize: number = 10): Promise<Bounty[]> {
+    if (!Array.isArray(bountyIds) || bountyIds.length === 0) {
+      return [];
+    }
+
+    const results: Map<string, Bounty> = new Map();
+
+    // Process bounties in chunks
+    for (let i = 0; i < bountyIds.length; i += chunkSize) {
+      const chunk = bountyIds.slice(i, i + chunkSize);
+      const chunkResults = await Promise.all(
+        chunk.map((id) => this.getBounty(id))
+      );
+
+      chunk.forEach((id, index) => {
+        const bounty = chunkResults[index];
+        if (bounty) {
+          results.set(id, bounty);
+        }
+      });
+    }
+
+    // Return bounties in original order, preserving input order
+    return bountyIds
+      .map((id) => results.get(id))
+      .filter((b): b is Bounty => b !== undefined);
+  }
+
   // === Write methods (return assembled transaction XDR for signing)
 
   /**
@@ -838,6 +878,67 @@ export class MergeMintSDK {
       `All ${maxRetries} submission attempts failed. Last error: ${rawMsg}`,
       lastError
     );
+  }
+
+  /**
+   * Estimates the fee for a transaction without submitting it.
+   * Simulates the call and returns resource and inclusion fees.
+   *
+   * @param method - Contract method name (e.g. "create_bounty", "claim_bounty").
+   * @param args - ScVal arguments for the method.
+   * @param sourceAccount - Address that would fund and sign the transaction.
+   * @returns Fee estimates in stroops and formatted XLM.
+   * @throws {@link MergeMintSdkError} if the simulation fails or the RPC transport
+   * fails on every attempt allowed by the configured retry policy.
+   */
+  async estimateFee(method: string, args: xdr.ScVal[], sourceAccount: string): Promise<{
+    resourceFeeStroops: bigint;
+    resourceFeeXlm: string;
+    inclusionFeeStroops: bigint;
+    inclusionFeeXlm: string;
+    totalFeeStroops: bigint;
+    totalFeeXlm: string;
+  }> {
+    const account = await this.withRetry(() =>
+      this.rpc.getAccount(sourceAccount)
+    );
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.networkPassphrase,
+    })
+      .addOperation(this.contract.call(method, ...args))
+      .setTimeout(30)
+      .build();
+
+    const sim = await this.withRetry(() => this.rpc.simulateTransaction(tx));
+
+    if (SorobanRpc.Api.isSimulationError(sim)) {
+      throw new MergeMintSdkError(
+        `Fee estimation failed: ${parseSimulationError(sim)}`,
+        "SIMULATION_FAILED"
+      );
+    }
+
+    const result = sim as SorobanRpc.Api.SimulateTransactionSuccessResponse;
+    const resourceFeeStroops = BigInt(result.resourceFee || "1000000");
+    const inclusionFeeStroops = BigInt(BASE_FEE);
+    const totalFeeStroops = resourceFeeStroops + inclusionFeeStroops;
+
+    // Helper to format stroops to XLM
+    const stroopsToXlm = (stroops: bigint): string => {
+      const xlmValue = Number(stroops) / 10_000_000;
+      return xlmValue.toFixed(7).replace(/\.?0+$/, '');
+    };
+
+    return {
+      resourceFeeStroops,
+      resourceFeeXlm: stroopsToXlm(resourceFeeStroops),
+      inclusionFeeStroops,
+      inclusionFeeXlm: stroopsToXlm(inclusionFeeStroops),
+      totalFeeStroops,
+      totalFeeXlm: stroopsToXlm(totalFeeStroops),
+    };
   }
 
   // === Internals
